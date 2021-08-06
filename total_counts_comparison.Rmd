@@ -1,0 +1,177 @@
+---
+title: "Total counts comparison"
+output: html_notebook
+---
+
+This code is designed to analyze the differences in gene counts between data that was pre-processed with 
+cellranger vs. the same data pre-processed with kallisto. The data analyzed is pineal sample 2 (Shainer et al. 2019).
+
+```{r}
+#load the required packages
+library(dplyr)
+library(pheatmap)
+library(RColorBrewer)
+library(viridisLite)
+```
+
+First we generate a data frame containing all the genes and their total counts. This data frame is based on the gene-cell matrix of the scSeq (the values of each row are summed up).
+
+```{r}
+# create a data frame with the total counts of cellranger
+#copy the gene-cell matrix values:
+cellr_counts<-data.frame(pineal_s2_cellr_101@assays[["RNA"]]@counts)
+#sum the values of each row:
+cellr_counts_row_sum<-data.frame(rowSums(cellr_counts))
+#copy the gene names to a new column
+cellr_counts_row_sum$gene<-row.names(cellr_counts_row_sum) 
+# change to row names to numbers, length equalr to the length of the gene-cell matrix.
+row.names(cellr_counts_row_sum) <- 1:20701
+
+# create a data frame with the total counts of kallisto (same steps as before)
+kb_counts<-data.frame(pineal_s2_kb_101@assays[["RNA"]]@counts)
+kb_counts_row_sum<-data.frame(rowSums(kb_counts))
+kb_counts_row_sum$gene<-row.names(kb_counts_row_sum) 
+row.names(kb_counts_row_sum) <- 1:23387
+```
+
+
+Join the two dataframes (kallisto and cellranger total counts) into one called "all counts". 
+Then, calculate the diff_ratio: (kb_counts - cellr_count)/(kb_counts + cellr_counts), which represents the count difference ratio. 
+Positive values are genes with higher counts in kallisto, negative values are genes with higher counts in cellranger. 
+Values equal to 1 represent genes that are not detected at all in cellranger (counts = 0), 
+and even if are counted only once in kallisto, would have the highest diff_ratio. 
+Similarly, values equal to -1 represent genes that are not detected at all in kallisto (counts = 0),
+and even if are counted only once in cellrnager, would have the lowest diff_ratio.
+We will remove those cases (diff_ratio=1 or diff_ratio=-1) later, in order to represent only genes truly detected with a reasonable number of counts.
+For some genes that are not detected at all in one data set, the count value is "NA". Those genes, even if are highly counted in one dataset, will not have a diff_ratio value, but a "NA" instead. We will add the genes with the highest counts in one dataset, and "NA" in the other, for the downsteam analyses as well, as those represent true diff_ratio cases, even though the "NA" might prevent them from passing the threshold.
+
+```{r}
+#join the two dataframes
+all_counts<-full_join(kb_counts_row_sum, cellr_counts_row_sum, by = "gene")
+#reorder the columns
+all_counts <- all_counts[, c(2, 1, 3)]
+# add a new column containg the dif ratio (as described above).
+all_counts<-mutate(all_counts, diff_ratio = ((all_counts$rowSums.kb_counts.- all_counts$rowSums.cellr_counts.)/(all_counts$rowSums.kb_counts. + all_counts$rowSums.cellr_counts.)))
+#name the columns currectly
+names(all_counts)[2]="kallisto_counts"
+names(all_counts)[3]="cellranger_counts"
+# save the results in a csv file
+write.csv(all_counts, "all_counts.csv", row.names = FALSE)
+```
+
+## Genes with higher counts in kallisto
+Now we pick the top 80 diff_ratio genes in kallisto (diff_ratio closest to 1, but not equal to 1) 
+```{r}
+#create a table of kb highly expressed genes that are very low in cellr. We first take the 
+top_80_diff_kb<- all_counts[all_counts$diff_ratio != 1, ] %>% top_n(n = 80, wt = diff_ratio)
+#keep only the gene names
+top_80_diff_kb<-data.frame(top_80_diff_kb$gene)
+names(top_80_diff_kb)[1]="gene"
+```
+
+
+add the top 20 genes that exist in kallisto and not at all in cellranger (assigned as NA)
+```{r}
+# find genes that only exist in kallisto
+NA_genes_in_cellr<-setdiff(kb_counts_row_sum$gene,cellr_counts_row_sum$gene)
+# use this dataframe to filter the NA rows from the diff_ratio table
+NA_genes_in_cellr_counts_in_kb<-data.frame(filter(kb_counts_row_sum, kb_counts_row_sum$gene %in% NA_genes_in_cellr))
+#pick the top 20 genes with high counts in kallisto and "NA" in cellranger
+top_20_NA_kb<-NA_genes_in_cellr_counts_in_kb %>% top_n(n = 20, wt = rowSums.kb_counts.)
+top_20_NA_kb<-data.frame(top_20_NA_kb$gene)
+names(top_20_NA_kb)[1]="gene"
+```
+
+Now we combine the top 80 diff_ratio and the 20 NA genes
+```{r}
+top100_heatmap_kb<-bind_rows(top_80_diff_kb, top_20_NA_kb)
+```
+
+We want to plot those genes in a heatmap to see whether they are considered to be cluster markers 
+(and therefore their detection in a certain pre-processed dataset is the reason for the detection of unique cell type). 
+First we average the expression of the 100 genes from before, for each of the clusters. We average the scale.data.
+```{r}
+kb_RNA_heatmap<- as.data.frame(AverageExpression(
+  pineal_s2_kb_101,
+  return.seurat = FALSE,
+  group.by = "ident",
+  slot = "scale.data",
+  verbose = TRUE,
+  features=top100_heatmap_kb$gene
+))
+
+```
+
+Now we can plot this data in a heatmap
+```{r}
+pheatmap(kb_RNA_heatmap, 
+         scale = "none", 
+         main= "High count genes in kb and their cluster specific average expression",
+         color= viridis(11), 
+         border_color=NA,
+         cluster_rows = TRUE, 
+         cluster_cols = FALSE,
+         show_colnames = TRUE,
+         angle_col=45,
+         fontsize = 8, fontsize_row = 4)
+```
+
+## Genes with higher counts in cellranger
+
+Create a table of cellranger highly expressed genes that are very low in kallisto (as before).
+First,we pick the top 80 diff_ratio genes in cellranger (diff_ratio closest to -1, but not equal to -1) 
+
+```{r}
+top_80_diff_cellr<- all_counts[all_counts$diff_ratio != -1, ] %>% top_n(n = 80, wt = diff_ratio)
+#keep only the gene names
+top_80_diff_cellr<-data.frame(top_80_diff_cellr$gene)
+names(top_80_diff_cellr)[1]="gene"
+```
+
+Add the top 20 genes that exist in cellranger and not at all in kallisto (assigned as NA)
+```{r}
+# find genes that only exist in cellranger
+NA_genes_in_kb<-setdiff(cellr_counts_row_sum$gene, kb_counts_row_sum$gene)
+# use this dataframe to filter the NA rows from the diff_ratio table
+NA_genes_in_kb_counts_in_cellr<-data.frame(filter(cellr_counts_row_sum, cellr_counts_row_sum$gene %in% NA_genes_in_kb))
+#pick the top 20 genes with high counts in cellranger and "NA" in kallisto
+top_20_NA_cellr<-NA_genes_in_kb_counts_in_cellr %>% top_n(n = 20, wt = rowSums.cellr_counts.)
+top_20_NA_cellr<-data.frame(top_20_NA_cellr$gene)
+names(top_20_NA_cellr)[1]="gene"
+```
+
+
+Now we combine the top 80 diff_ratio and the 20 NA genes
+```{r}
+top100_heatmap_cellr<-bind_rows(top_80_diff_cellr, top_20_NA_cellr)
+```
+
+We want to plot those genes in a heatmap to see whether they are considered to be cluster markers 
+(and therefore their detection in a certain pre-processed dataset is the reason for the detection of unique cell type). 
+First we average the expression of the 100 genes from before, for each of the clusters. We average the scale.data.
+
+```{r}
+cellr_RNA_heatmap<- as.data.frame(AverageExpression(
+  pineal_s2_cellr_101,
+  return.seurat = FALSE,
+  group.by = "ident",
+  slot = "scale.data",
+  verbose = TRUE,
+  features=top100_heatmap_cellr$gene
+))
+```
+
+Now we can plot this data in a heatmap.
+```{r}
+pheatmap(cellr_RNA_heatmap, 
+         scale = "none", 
+         main= "High count genes in cellranger and their cluster specific average expression",
+         color= viridis(11),
+         border_color=NA,
+         cluster_rows = TRUE, 
+         cluster_cols = FALSE,
+         show_colnames = TRUE,
+         angle_col=45,
+         fontsize = 8, fontsize_row = 4)
+```
+

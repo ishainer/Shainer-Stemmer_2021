@@ -1,0 +1,580 @@
+---
+title: "Zebrafish pineal gland scSeq sample 1 downstream analysis"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+Analysis of zebrafish pineal gland cell types. For original data see Shainer et al. 2019 (<https://www.sciencedirect.com/science/article/pii/S0960982219305561>, pineal sample 1). 
+
+```{r message=FALSE, warning=FALSE}
+library(dplyr)
+library(Seurat)
+library(Matrix)
+library(ggplot2)
+library(reticulate)
+library(stringr)
+library(ggpubr)
+
+#load files sample 1
+pineal_s1_cellr_101 <- readRDS("/zstorage/cellr_vs_kallisto/rds_files/D_rerio.GRCz11.101/dr_pineal_s1_cellr.rds")
+pineal_s1_kb_101 <- readRDS("/zstorage/cellr_vs_kallisto/rds_files/D_rerio.GRCz11.101/dr_pineal_s1_kb.rds")
+pineal_s1_kb_forced_101 <- readRDS("/zstorage/cellr_vs_kallisto/rds_files/D_rerio.GRCz11.101/dr_pineal_s1_kb_forced.rds")
+```
+
+
+## Downstream analysis of data preprocessed with kallisto
+
+
+Calculate the percentage of mitochondrial genes per cell.
+```{r}
+pineal_s1_kb_101[["percent.mt"]] <- PercentageFeatureSet(object = pineal_s1_kb_101, pattern = "^mt-")
+```
+
+
+Visualize QC metrics.
+```{r fig.height=4, fig.width=6}
+VlnPlot(object = pineal_s1_kb_101, 
+        features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+        ncol = 3, 
+        pt.size=0)
+```
+
+
+Total number of cells before filtration:
+```{r}
+sum(table(...=pineal_s1_kb_101@active.ident))
+```
+
+
+Filtration of outlier cells containing unusual number of genes, UMI or percentage of mitochondrial genes. Plot the distribution of the filtered cells.
+```{r fig.height=4, fig.width=6}
+pineal_s1_kb_101 <- subset(x = pineal_s1_kb_101, 
+                           subset = nFeature_RNA > 200  
+                           & nCount_RNA < 15000 
+                           & percent.mt<30)
+
+VlnPlot(object = pineal_s1_kb_101, 
+        features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+        ncol = 3, 
+        pt.size=0)
+
+```
+
+
+Total number of cells after filtration:
+```{r}
+sum(table(...=pineal_s1_kb_101@active.ident))
+```
+
+
+Standard normalization, variable gene identification and scaling: 
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+pineal_s1_kb_101 <- NormalizeData(object = pineal_s1_kb_101, 
+                                  normalization.method = "LogNormalize", 
+                                  scale.factor = 10000)
+
+pineal_s1_kb_101 <- FindVariableFeatures(object = pineal_s1_kb_101, 
+                                         selection.method = "vst", 
+                                         nfeatures = 2000)
+
+all_genes_kallisto_s1 <- rownames(x = pineal_s1_kb_101)
+pineal_s1_kb_101 <- ScaleData(object = pineal_s1_kb_101, features = all_genes_kallisto_s1)
+```
+
+
+principal component analysis.
+```{r}
+pineal_s1_kb_101 <- RunPCA(object = pineal_s1_kb_101, features = VariableFeatures(object = pineal_s1_kb_101))
+
+```
+
+
+Visualize the principal components percentage of variance by an elbow plot.
+```{r fig.height=4, fig.width=6}
+ElbowPlot(object = pineal_s1_kb_101, ndims = 30)
+```
+
+
+PCs 1-25 were used as dimensions of reduction to compute the k.param nearest neighbors
+```{r fig.height=4, fig.width=6, message=FALSE, warning=FALSE}
+pineal_s1_kb_101 <- FindNeighbors(object = pineal_s1_kb_101, dims = 1:25)
+pineal_s1_kb_101 <- FindClusters(object = pineal_s1_kb_101, resolution = 1.5)
+pineal_s1_kb_101 <- RunUMAP(object = pineal_s1_kb_101, dims = 1:25)
+
+kb_UMAP_unmerged_s1 <- DimPlot(object = pineal_s1_kb_101, reduction = "umap",
+                            label=TRUE, pt.size = 0.5, label.size = 3) + 
+  theme(legend.position="none", 
+        axis.title.x=element_text(size=12),
+        axis.title.y=element_text(size=12),
+        plot.title = element_text(size=14, hjust=0.0)) + ggtitle("kallisto (res.=1.5)") + 
+  theme(plot.title = element_text(size = 12))
+kb_UMAP_unmerged_s1
+```
+
+
+Analysis of the top markers for each cluster.
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+pineal_s1_kb_101.markers <- FindAllMarkers(object = pineal_s1_kb_101, 
+                                           only.pos = TRUE, 
+                                           min.pct = 0.25, 
+                                           logfc.threshold = 0.8)
+```
+```{r}
+pineal_s1_kb_101.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+```
+
+
+Dotplot of the top known markers of the pineal cell types (based on Shainer et al. 2019) as well as newly identify markers (such as col14a1b, dcn and ccr9a).
+```{r fig.height=5, fig.width=10}
+dot_plot_genes_s1= c("exorh", "gnat1", "gngt1", 
+                  "gnat2", "gngt2a", "col14a1b", "opn1lw1","parietopsin", 
+                  "asip2b", "rpe65a",
+                  "dkk3b", "fabp7b",
+                  "elavl4", "cart3",
+                  "dcn", "igfbp5b",
+                  "cahz", "hbaa1",  
+                  "ccr9a", "il4", 
+                  "cd74a", "apoc1",
+                  "kdrl", "plvapa", 
+                  "bscl2l", "gch2", 
+                  "hbegfb", "fgl2a")
+
+kallisto_dotplot_unmerged_s1<- DotPlot(pineal_s1_kb_101, features = dot_plot_genes_s1, 
+                                         cluster.idents=FALSE, dot.scale=2) + RotatedAxis() + 
+  theme(axis.text.x = element_text(angle=45, size=10),
+        axis.text.y = element_text(size=5, angle=0),
+        legend.title = element_text(size=10),
+        legend.text = element_text(size = 10),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank())
+kallisto_dotplot_unmerged_s1
+```
+
+
+Markers separating the red- and green-like photoreceptors (clusters 15 & 17):
+```{r fig.height=5, fig.width=10}
+FeaturePlot(object=pineal_s1_kb_101, features = c("col14a1b", "parietopsin"), label = TRUE, label.size = 3)
+```
+
+
+How many cells in each cluster?
+```{r}
+(table(...=pineal_s1_kb_101@active.ident))
+```
+
+
+
+## Downstream analysis of data preprocessed with Cell Ranger
+
+
+Calculate the percentage of mitochondrial genes per cell.
+```{r}
+pineal_s1_cellr_101[["percent.mt"]] <- PercentageFeatureSet(object = pineal_s1_cellr_101, pattern = "^mt-")
+```
+
+
+Visualize QC metrics.
+```{r fig.height=4, fig.width=6}
+VlnPlot(object = pineal_s1_cellr_101, 
+        features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+        ncol = 3, 
+        pt.size=0)
+```
+
+
+Total number of cells before filtration:
+```{r}
+sum(table(...=pineal_s1_cellr_101@active.ident))
+```
+
+
+Filtration of outlier cells containing unusual number of genes, UMI or percentage of mitochondrial genes. Plot the distribution of the filtered cells.
+```{r fig.height=4, fig.width=6}
+pineal_s1_cellr_101 <- subset(x = pineal_s1_cellr_101, 
+                           subset = nFeature_RNA > 200  
+                           & nCount_RNA < 15000 
+                           & percent.mt<30)
+
+VlnPlot(object = pineal_s1_cellr_101, 
+        features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+        ncol = 3, 
+        pt.size=0)
+
+```
+
+
+Total number of cells after filtration:
+```{r}
+sum(table(...=pineal_s1_cellr_101@active.ident))
+```
+
+
+Standard normalization, variable gene identification and scaling: 
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+pineal_s1_cellr_101 <- NormalizeData(object = pineal_s1_cellr_101, 
+                                  normalization.method = "LogNormalize", 
+                                  scale.factor = 10000)
+
+pineal_s1_cellr_101 <- FindVariableFeatures(object = pineal_s1_cellr_101, 
+                                         selection.method = "vst", 
+                                         nfeatures = 2000)
+
+all_genes_cellr_s1 <- rownames(x = pineal_s1_cellr_101)
+pineal_s1_cellr_101 <- ScaleData(object = pineal_s1_cellr_101, features = all_genes_cellr_s1)
+```
+
+
+Principal component analysis.
+```{r}
+pineal_s1_cellr_101 <- RunPCA(object = pineal_s1_cellr_101, 
+                              features = VariableFeatures(object = pineal_s1_cellr_101))
+
+```
+
+
+Visualize the principal components percentage of variance by an elbow plot.
+```{r fig.height=4, fig.width=6}
+ElbowPlot(object = pineal_s1_cellr_101, ndims = 30)
+```
+
+
+PCs 1-25 were used as dimensions of reduction to compute the k.param nearest neighbors
+```{r fig.height=4, fig.width=6, message=FALSE, warning=FALSE}
+pineal_s1_cellr_101 <- FindNeighbors(object = pineal_s1_cellr_101, dims = 1:25)
+pineal_s1_cellr_101 <- FindClusters(object = pineal_s1_cellr_101, resolution = 1.5)
+pineal_s1_cellr_101 <- RunUMAP(object = pineal_s1_cellr_101, dims = 1:25)
+
+cellr_UMAP_unmerged_s1 <- DimPlot(object = pineal_s1_cellr_101, reduction = "umap",
+                            label=TRUE, pt.size = 0.5, label.size = 3) + 
+  theme(legend.position="none", 
+        axis.title.x=element_text(size=12),
+        axis.title.y=element_text(size=12),
+        plot.title = element_text(size=12, hjust=0.0)) + ggtitle("Cell Ranger (res.=1.5)")+ 
+  theme(plot.title = element_text(size = 12))
+cellr_UMAP_unmerged_s1
+```
+
+
+Analysis of the top markers for each cluster.
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+pineal_s1_cellr_101.markers <- FindAllMarkers(object = pineal_s1_cellr_101, 
+                                           only.pos = TRUE, 
+                                           min.pct = 0.25, 
+                                           logfc.threshold = 0.8)
+```
+```{r}
+pineal_s1_cellr_101.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+```
+
+
+Dotplot of the top known markers of the pineal cell types (based on Shainer et al. 2019) as well as newly identify markers (such as dcn and ccr9a).
+```{r fig.height=5, fig.width=10}
+
+cellranger_dotplot_unmerged_s1<- DotPlot(pineal_s1_cellr_101, features = dot_plot_genes_s1, 
+                                         cluster.idents=FALSE, dot.scale=2) + RotatedAxis() + 
+  theme(axis.text.x = element_text(angle=45, size=10),
+        axis.text.y = element_text(size=5, angle=0),
+        legend.title = element_text(size=10),
+        legend.text = element_text(size = 10),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank())
+cellranger_dotplot_unmerged_s1
+```
+
+
+Markers for red- and green-like photoreceptors are expressed in a single cluster (#14):
+```{r fig.height=5, fig.width=10}
+FeaturePlot(object=pineal_s1_cellr_101, features = c("opn1lw1", "parietopsin"), label = TRUE, label.size = 3)
+```
+
+
+How many cells in each cluster?
+```{r}
+(table(...=pineal_s1_cellr_101@active.ident))
+```
+
+
+When using the same parameters, the two types of cone-like photoreceptors can be distinguished when the pre-processing is done with kallisto, but not Cell Ranger, even though Kallisto pre-processed data contain half of the total cells (2199 cells in kallisto, and 4334 cells in Cell Ranger), and 2/3 of the cone-like photoreceptors (53 in kallisto and 80 in Cell Ranger).
+
+Increasing the resolution does not improve the identification of the two cone-like photoreceptors types in the Cell Ranger data (the green and red opsin expressing cells are still considered the same cluster) :
+```{r fig.height=4, fig.width=6, message=FALSE, warning=FALSE}
+pineal_s1_cellr_101 <- FindNeighbors(object = pineal_s1_cellr_101, dims = 1:25)
+pineal_s1_cellr_101 <- FindClusters(object = pineal_s1_cellr_101, resolution = 3.5)
+pineal_s1_cellr_101 <- RunUMAP(object = pineal_s1_cellr_101, dims = 1:25)
+
+cellr_UMAP_unmerged_s1_res_3_5 <- DimPlot(object = pineal_s1_cellr_101, reduction = "umap",
+                            label=TRUE, pt.size = 0.5, label.size = 3) + 
+  theme(legend.position="none", 
+        axis.title.x=element_text(size=10),
+        axis.title.y=element_text(size=10),
+        plot.title = element_text(size=12, hjust=0.0)) + ggtitle("Cell Ranger (res.=3.5)")
+cellr_UMAP_unmerged_s1_res_3_5
+```
+```{r fig.height=5, fig.width=10}
+FeaturePlot(object=pineal_s1_cellr_101, features = c("opn1lw1", "parietopsin"), label = TRUE, label.size = 3)
+```
+
+Dotplot high res.
+```{r fig.height=5, fig.width=10}
+
+cellranger_dotplot_high_res_s1<- DotPlot(pineal_s1_cellr_101, features = dot_plot_genes_s1, 
+                                         cluster.idents=FALSE, dot.scale=2) + RotatedAxis() + 
+  theme(axis.text.x = element_text(angle=45, size=10),
+        axis.text.y = element_text(size=5, angle=0),
+        legend.title = element_text(size=10),
+        legend.text = element_text(size = 10),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank())
+cellranger_dotplot_high_res_s1
+```
+
+
+
+```{r include=FALSE}
+# use the resolution 1.5 again for the next analysis steps
+pineal_s1_cellr_101 <- FindNeighbors(object = pineal_s1_cellr_101, dims = 1:25)
+pineal_s1_cellr_101 <- FindClusters(object = pineal_s1_cellr_101, resolution = 1.5)
+pineal_s1_cellr_101 <- RunUMAP(object = pineal_s1_cellr_101, dims = 1:25)
+```
+
+
+This shows that similar to the results observed for the pineal sample 2, the additional type of the photoreceptors can only be detected under standard conditions in the kallisto pre-processed data, but not for the Cell Ranger pre-processed data. 
+
+For sample number 1, additional differences were observed between the Cell Ranger and the kallisto pre-processed data. Two Cell Ranger clusters (#15 & #21, when analyzed with resolution of 1.5) did not express any of the described pineal markers (see dotplot). By exploring the markers of those cluster, we identified cluster 21 to be pigment cells (expressing bscl2l & gch2 genes, which are known xanthophore markers) and cluster 15 to be a type of hematopoietic cells (expressing hbegfb & fgl2a).
+
+```{r fig.height=8, fig.width=10}
+FeaturePlot(object=pineal_s1_cellr_101, features = c("bscl2l", "gch2", "hbegfb", "fgl2a"), label = TRUE, label.size = 3)
+```
+
+
+Although these are not true pineal specific cell type, but rather present a contamination of "outside cells" such as the pigment cells (originating from the skin), or hematopoietic cells that reside in any tissue, these clusters seem to be unique to the Cell Ranger dataset and do not appear in the kallisto data set. Are those cells appear in kallisto and assigned to another cluster or are they filtered out? To test this, we checked whether the cell barcodes of the cells belonging to cluster 15 and 21 in the Cell Ranger data exist in the kallisto data, and if so in which cluster:
+
+```{r fig.height=5, fig.width=10, message=FALSE, warning=FALSE}
+# list all of kallisto cell barcodes
+kb_cell_barcodes<-data.frame(WhichCells(pineal_s1_kb_101))
+names(kb_cell_barcodes)[1]="barcodes"
+
+# list Cell Ranger cluster #21 cell barcodes
+cellr_21_barcodes<-data.frame(WhichCells(pineal_s1_cellr_101, idents = "21"))
+names(cellr_21_barcodes)[1]="barcodes"
+cellr_21_barcodes$barcodes<-str_remove(cellr_21_barcodes$barcodes, "[-1]")
+cellr_21_barcodes$barcodes<-str_remove(cellr_21_barcodes$barcodes, "[1]")
+#plot Cell Ranger cluster #21 cell barcodes that exist in kallisto (kallisto UMAP)
+cluster_21_in_kb<-DimPlot(pineal_s1_kb_101, 
+        label=TRUE, 
+        cells.highlight = c(intersect(cellr_21_barcodes, kb_cell_barcodes)),
+        label.size = 3) +
+  ggtitle("Cell Ranger cluster #21 cell barcodes in kallisto") + 
+  theme(plot.title = element_text(size = 12, face="plain"))
+
+# list Cell Ranger cluster #15 cell barcode
+cellr_15_barcodes<-data.frame(WhichCells(pineal_s1_cellr_101, idents = "15"))
+names(cellr_15_barcodes)[1]="barcodes"
+cellr_15_barcodes$barcodes<-str_remove(cellr_15_barcodes$barcodes, "[-1]")
+cellr_15_barcodes$barcodes<-str_remove(cellr_15_barcodes$barcodes, "[1]")
+#plot Cell Ranger cluster #15 cell barcodes that exist in kallisto (kallisto UMAP)
+cluster_15_in_kb<-DimPlot(pineal_s1_kb_101, 
+        label=TRUE, 
+        cells.highlight = c(intersect(cellr_15_barcodes, kb_cell_barcodes)),
+        label.size = 3) +
+  ggtitle("Cell Ranger cluster #15 cell barcodes in kallisto") + 
+  theme(plot.title = element_text(size = 12, face="plain"))
+
+unique_barcodes_plot<-ggarrange(cluster_21_in_kb, cluster_15_in_kb, 
+          common.legend = TRUE,
+          labels = c("A", "B"),
+          ncol = 2, nrow = 1, legend = "right")
+unique_barcodes_plot
+```
+
+
+Cell Ranger cluster #15 has 62 cells and cluster #21 has 24 cells, the number of the same cells that appear in kallisto:
+```{r}
+# The number of Cell Ranger cluster #15 cell barcodes that exist in kallisto: 
+nrow(intersect(cellr_15_barcodes, kb_cell_barcodes))
+```
+```{r}
+# The number of Cell Ranger cluster #21 cell barcodes that exist in kallisto: 
+nrow(intersect(cellr_21_barcodes, kb_cell_barcodes))
+```
+
+
+Cluster #15 cells are almost completely filtered out in the kallisto dataset. These cells might be of low quality or are just lost. Cluster #21 cells mostly exist in the kallisto (but in a lower number), but do not form a unique cluster under the conditions set for the clustering of the data (UMAP shows that this cluster can be assigned manually or by other clustering parameters, similar to the case of the green-like photoreceptors described in the manuscript), or as a result of the lower number of cells of this type. 
+This shows that some clusters can be observed in the Cell Ranger pre-processed data that do not appear in the kallisto data. In this particular case, these clusters represent an "uninteresting" information, as those are not true pineal gland cell types, but for other datasets it might be of a biological relevance. 
+
+
+## Downstream analysis of data preprocessed with kallisto_forced
+
+
+Calculate the percentage of mitochondrial genes per cell.
+```{r}
+pineal_s1_kb_forced_101[["percent.mt"]] <- PercentageFeatureSet(object = pineal_s1_kb_forced_101, pattern = "^mt-")
+```
+
+
+Visualize QC metrics.
+```{r fig.height=4, fig.width=6}
+VlnPlot(object = pineal_s1_kb_forced_101, 
+        features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+        ncol = 3, 
+        pt.size=0)
+```
+
+
+Total number of cells before filtration:
+```{r}
+sum(table(...=pineal_s1_kb_forced_101@active.ident))
+```
+
+
+Filteration of outlier cells containing unusual number of genes, UMI or percentage of mitochondrial genes. Plot the distribution of the filtered cells.
+```{r fig.height=4, fig.width=6}
+pineal_s1_kb_forced_101 <- subset(x = pineal_s1_kb_forced_101, 
+                           subset = nFeature_RNA > 200  
+                           & nCount_RNA < 15000 
+                           & percent.mt<30)
+
+VlnPlot(object = pineal_s1_kb_forced_101, 
+        features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+        ncol = 3, 
+        pt.size=0)
+
+
+```
+
+Total number of cells after filtration:
+```{r}
+sum(table(...=pineal_s1_kb_forced_101@active.ident))
+```
+
+Standard normalization, variable gene identification and scaling: 
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+pineal_s1_kb_forced_101 <- NormalizeData(object = pineal_s1_kb_forced_101, 
+                                  normalization.method = "LogNormalize", 
+                                  scale.factor = 10000)
+
+pineal_s1_kb_forced_101 <- FindVariableFeatures(object = pineal_s1_kb_forced_101, 
+                                         selection.method = "vst", 
+                                         nfeatures = 2000)
+
+all_genes_kallisto_forced_s1 <- rownames(x = pineal_s1_kb_forced_101)
+pineal_s1_kb_forced_101 <- ScaleData(object = pineal_s1_kb_forced_101, features = all_genes_kallisto_forced_s1)
+```
+
+Principal component analysis.
+```{r}
+pineal_s1_kb_forced_101 <- RunPCA(object = pineal_s1_kb_forced_101, features = VariableFeatures(object = pineal_s1_kb_forced_101))
+
+```
+
+Visualize the principal components percentage of variance by an elbow plot.
+```{r fig.height=4, fig.width=6}
+ElbowPlot(object = pineal_s1_kb_forced_101, ndims = 30)
+```
+
+PCs 1-25 were used as dimensions of reduction to compute the k.param nearest neighbors
+```{r fig.height=4, fig.width=6, message=FALSE, warning=FALSE}
+pineal_s1_kb_forced_101 <- FindNeighbors(object = pineal_s1_kb_forced_101, dims = 1:25)
+pineal_s1_kb_forced_101 <- FindClusters(object = pineal_s1_kb_forced_101, resolution = 1.5)
+pineal_s1_kb_forced_101 <- RunUMAP(object = pineal_s1_kb_forced_101, dims = 1:25)
+
+kb_forced_UMAP_unmerged_s1_res_1_5 <- DimPlot(object = pineal_s1_kb_forced_101, reduction = "umap",
+                            label=TRUE, pt.size = 0.5, label.size = 3) + 
+  theme(legend.position="none", 
+        axis.title.x=element_text(size=12),
+        axis.title.y=element_text(size=12),
+        plot.title = element_text(size=12, hjust=0.0)) + ggtitle("kallisto forced (res.=1.5)") 
+kb_forced_UMAP_unmerged_s1_res_1_5
+```
+
+Analysis of the top markers for each cluster.
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+pineal_s1_kb_forced_101.markers <- FindAllMarkers(object = pineal_s1_kb_forced_101, 
+                                           only.pos = TRUE, 
+                                           min.pct = 0.25, 
+                                           logfc.threshold = 0.8)
+```
+
+```{r}
+pineal_s1_kb_forced_101.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+```
+
+Dotplot of the top known markers of the pineal cell types (based on Shainer et al. 2019) as well as newly identify markers (such as dcn and ccr9a).
+```{r fig.height=5, fig.width=10}
+
+kallisto_forced_dotplot_unmerged_s1<- DotPlot(pineal_s1_kb_forced_101, features = dot_plot_genes_s1, 
+                                         cluster.idents=FALSE, dot.scale=2) + RotatedAxis() + 
+  theme(axis.text.x = element_text(angle=45, size=10),
+        axis.text.y = element_text(size=5, angle=0),
+        legend.title = element_text(size=10),
+        legend.text = element_text(size = 10),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank())
+kallisto_forced_dotplot_unmerged_s1
+```
+
+```{r fig.height=5, fig.width=10}
+FeaturePlot(object=pineal_s1_kb_forced_101, features = c("opn1lw1", "parietopsin"), label = TRUE, label.size = 3)
+```
+
+Under a resolution of 1.5, the green- and red-like photoreceptors cannot be separated. Increasing the resolution in the case of kallisto forced enable to seprate those photoreceptors. 
+
+```{r fig.height=4, fig.width=6, message=FALSE, warning=FALSE}
+pineal_s1_kb_forced_101 <- FindNeighbors(object = pineal_s1_kb_forced_101, dims = 1:25)
+pineal_s1_kb_forced_101 <- FindClusters(object = pineal_s1_kb_forced_101, resolution = 2.4)
+pineal_s1_kb_forced_101 <- RunUMAP(object = pineal_s1_kb_forced_101, dims = 1:25)
+
+kb_forced_UMAP_unmerged_s1_res_2_4 <- DimPlot(object = pineal_s1_kb_forced_101, reduction = "umap",
+                            label=TRUE, pt.size = 0.5, label.size = 3) + 
+  theme(legend.position="none", 
+        axis.title.x=element_text(size=12),
+        axis.title.y=element_text(size=12),
+        plot.title = element_text(size=14, hjust=0.0)) + ggtitle("kallisto forced (res.=2.4)") + 
+  theme(plot.title = element_text(size = 12))
+kb_forced_UMAP_unmerged_s1_res_2_4
+```
+Dotplot high res
+```{r fig.height=5, fig.width=10}
+
+kallisto_forced_dotplot_hig_res_s1<- DotPlot(pineal_s1_kb_forced_101, features = dot_plot_genes_s1, 
+                                         cluster.idents=FALSE, dot.scale=2) + RotatedAxis() + 
+  theme(axis.text.x = element_text(angle=45, size=10),
+        axis.text.y = element_text(size=5, angle=0),
+        legend.title = element_text(size=10),
+        legend.text = element_text(size = 10),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank())
+kallisto_forced_dotplot_hig_res_s1
+```
+
+## plots
+
+```{r fig.height=20, fig.width=14}
+
+umap_S1<- ggarrange(cellr_UMAP_unmerged_s1, 
+                    cellr_UMAP_unmerged_s1_res_3_5, 
+                    kb_UMAP_unmerged_s1, 
+                    kb_forced_UMAP_unmerged_s1_res_1_5,
+                    kb_forced_UMAP_unmerged_s1_res_2_4,
+                  labels = c("A", "B", "C", "D","E"),
+                  common.legend = FALSE,
+                  ncol = 1, nrow = 5) #legend = "right")
+
+dotplots_s1<- ggarrange(cellranger_dotplot_unmerged_s1, 
+                        cellranger_dotplot_high_res_s1,
+                        kallisto_dotplot_unmerged_s1, 
+                        kallisto_forced_dotplot_unmerged_s1,
+                        kallisto_forced_dotplot_hig_res_s1,
+          common.legend = TRUE,
+          ncol = 1, nrow = 5, legend = "right")
+
+ggarrange(umap_S1, dotplots_s1,
+          ncol = 2, nrow = 1, widths = c(1, 2))
+
+```
+
+
+
